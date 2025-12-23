@@ -1,0 +1,30 @@
+# name: test/sql/llm.test
+# description: test llm extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT * FROM llm('test');
+----
+Catalog Error: Table Function with name llm does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require llm
+
+# Test SET config
+statement ok
+SET llm_base_url = 'http://test:1234';
+
+query I
+SELECT current_setting('llm_base_url');
+----
+http://test:1234
+
+# Test default value
+query I
+SELECT current_setting('llm_default_provider');
+----
+local
+
+# Note: Full llm() and prompt() tests require a running LLM server
+# See test/sql/llm_local.test for integration tests
