@@ -78,8 +78,8 @@ static std::string ResolveConfig(ClientContext &context, const std::string &para
 	return default_value;
 }
 
-// Build return type JSON schema
-static std::string BuildReturnTypeSchema(const std::string &return_type) {
+// Build return type JSON schema for OpenAI
+static std::string BuildOpenAIReturnTypeSchema(const std::string &return_type) {
 	if (return_type.empty()) {
 		return "";
 	}
@@ -95,13 +95,62 @@ static std::string BuildReturnTypeSchema(const std::string &return_type) {
 		json_type = "boolean";
 	} else if (upper_type == "VARCHAR" || upper_type == "STRING" || upper_type == "TEXT") {
 		json_type = "string";
+	} else if (upper_type.find("[]") != std::string::npos || upper_type == "ARRAY") {
+		// Array type - extract inner type if specified (e.g., "INTEGER[]")
+		std::string inner = "string";
+		if (upper_type.find("INTEGER") != std::string::npos || upper_type.find("INT") != std::string::npos) {
+			inner = "integer";
+		} else if (upper_type.find("DOUBLE") != std::string::npos || upper_type.find("FLOAT") != std::string::npos) {
+			inner = "number";
+		} else if (upper_type.find("BOOLEAN") != std::string::npos || upper_type.find("BOOL") != std::string::npos) {
+			inner = "boolean";
+		}
+		return R"({"name":"result","schema":{"type":"object","properties":{"value":{"type":"array","items":{"type":")" +
+		       inner + R"("}}},"required":["value"]},"strict":true})";
 	} else {
-		throw InvalidInputException("Unsupported return_type: '%s'. Use INTEGER, DOUBLE, BOOLEAN, or VARCHAR",
-		                            return_type);
+		throw InvalidInputException(
+		    "Unsupported return_type: '%s'. Use INTEGER, DOUBLE, BOOLEAN, VARCHAR, or INTEGER[]", return_type);
 	}
 
 	return R"({"name":"result","schema":{"type":"object","properties":{"value":{"type":")" + json_type +
 	       R"("}},"required":["value"]},"strict":true})";
+}
+
+// Build return type JSON schema for Gemini (uses uppercase types)
+static std::string BuildGeminiReturnTypeSchema(const std::string &return_type) {
+	if (return_type.empty()) {
+		return "";
+	}
+
+	std::string json_type;
+	std::string upper_type = StringUtil::Upper(return_type);
+
+	if (upper_type == "INTEGER" || upper_type == "INT" || upper_type == "BIGINT") {
+		json_type = "INTEGER";
+	} else if (upper_type == "DOUBLE" || upper_type == "FLOAT" || upper_type == "REAL") {
+		json_type = "NUMBER";
+	} else if (upper_type == "BOOLEAN" || upper_type == "BOOL") {
+		json_type = "BOOLEAN";
+	} else if (upper_type == "VARCHAR" || upper_type == "STRING" || upper_type == "TEXT") {
+		json_type = "STRING";
+	} else if (upper_type.find("[]") != std::string::npos || upper_type == "ARRAY") {
+		// Array type
+		std::string inner = "STRING";
+		if (upper_type.find("INTEGER") != std::string::npos || upper_type.find("INT") != std::string::npos) {
+			inner = "INTEGER";
+		} else if (upper_type.find("DOUBLE") != std::string::npos || upper_type.find("FLOAT") != std::string::npos) {
+			inner = "NUMBER";
+		} else if (upper_type.find("BOOLEAN") != std::string::npos || upper_type.find("BOOL") != std::string::npos) {
+			inner = "BOOLEAN";
+		}
+		return R"({"type":"OBJECT","properties":{"value":{"type":"ARRAY","items":{"type":")" + inner +
+		       R"("}}},"required":["value"]})";
+	} else {
+		throw InvalidInputException(
+		    "Unsupported return_type: '%s'. Use INTEGER, DOUBLE, BOOLEAN, VARCHAR, or INTEGER[]", return_type);
+	}
+
+	return R"({"type":"OBJECT","properties":{"value":{"type":")" + json_type + R"("}},"required":["value"]})";
 }
 
 // Bind function
@@ -220,9 +269,18 @@ static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBin
 		break;
 	}
 
-	// If return_type specified, build JSON schema
+	// If return_type specified, build JSON schema (provider-specific)
 	if (!bind_data->return_type.empty() && bind_data->json_schema.empty()) {
-		bind_data->json_schema = BuildReturnTypeSchema(bind_data->return_type);
+		if (bind_data->provider == LlmProvider::GEMINI) {
+			bind_data->json_schema = BuildGeminiReturnTypeSchema(bind_data->return_type);
+		} else {
+			bind_data->json_schema = BuildOpenAIReturnTypeSchema(bind_data->return_type);
+		}
+		bind_data->json_mode = true;
+	}
+
+	// Enable json_mode when json_schema is provided
+	if (!bind_data->json_schema.empty()) {
 		bind_data->json_mode = true;
 	}
 
