@@ -4,6 +4,9 @@
 
 require llm
 
+# Skip in CI - requires local LM Studio running
+require-env LOCAL_LLM_URL
+
 # Test llm() with local provider (default)
 query II
 SELECT length(response) > 0 as has_response, status FROM llm('Say hello in one word');

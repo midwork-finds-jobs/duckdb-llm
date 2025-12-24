@@ -1,38 +1,23 @@
 # name: test/sql/llm_batch.test
-# description: Test LLM batch API functions
+# description: Test LLM batch caching functions
 # group: [llm]
 
 require llm
 
-# Test batch list - should be empty initially
-query IIIIIIII
-SELECT batch_id, provider, batch_name, model, status, total, completed, failed FROM llm_batch_list()
+# Test llm_hash function returns consistent hash
+query I
+SELECT llm_hash('test prompt', 'test-model') = llm_hash('test prompt', 'test-model');
 ----
+true
 
-# Test batch list with provider filter
-query IIIIIIII
-SELECT batch_id, provider, batch_name, model, status, total, completed, failed FROM llm_batch_list(provider := 'openai')
+# Test llm_hash with different prompts returns different hashes
+query I
+SELECT llm_hash('prompt 1', 'model') != llm_hash('prompt 2', 'model');
 ----
+true
 
-# Test batch status for non-existent batch (returns empty)
-query IIIIIIII
-SELECT batch_id, provider, batch_name, model, status, total, completed, failed FROM llm_batch_status('fake-batch-id')
+# Test llm_hash with different models returns different hashes
+query I
+SELECT llm_hash('same prompt', 'model-a') != llm_hash('same prompt', 'model-b');
 ----
-
-# Test batch results for non-existent batch (returns error row)
-query IIII
-SELECT request_id, response, status, error_message FROM llm_batch_results('fake-batch-id')
-----
-NULL	NULL	error	Batch job not found: fake-batch-id
-
-# Test batch cancel for non-existent batch (should return cancelled=false)
-query II
-SELECT batch_id, cancelled FROM llm_batch_cancel('fake-batch-id')
-----
-fake-batch-id	false
-
-# Test batch wait for non-existent batch (returns not_found status)
-query IIIIII
-SELECT batch_id, status, total, completed, failed, timed_out FROM llm_batch_wait('fake-batch-id', timeout_seconds := 1)
-----
-NULL	not_found	0	0	0	false
+true
