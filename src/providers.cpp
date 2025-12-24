@@ -41,6 +41,46 @@ std::string EscapeJsonString(const std::string &str) {
 	return result;
 }
 
+// Strip markdown code block wrappers from JSON responses (e.g., ```json\n...\n```)
+static std::string StripMarkdownCodeBlock(const std::string &text) {
+	std::string result = text;
+
+	// Trim leading/trailing whitespace
+	size_t start = result.find_first_not_of(" \t\n\r");
+	if (start == std::string::npos) {
+		return result;
+	}
+	size_t end = result.find_last_not_of(" \t\n\r");
+	result = result.substr(start, end - start + 1);
+
+	// Check for ```json or ``` prefix
+	if (result.substr(0, 7) == "```json") {
+		result = result.substr(7);
+	} else if (result.substr(0, 3) == "```") {
+		result = result.substr(3);
+	} else {
+		return result; // No markdown wrapper
+	}
+
+	// Trim leading whitespace/newline after opening ```
+	start = result.find_first_not_of(" \t\n\r");
+	if (start != std::string::npos) {
+		result = result.substr(start);
+	}
+
+	// Check for closing ```
+	if (result.size() >= 3 && result.substr(result.size() - 3) == "```") {
+		result = result.substr(0, result.size() - 3);
+		// Trim trailing whitespace before closing ```
+		end = result.find_last_not_of(" \t\n\r");
+		if (end != std::string::npos) {
+			result = result.substr(0, end + 1);
+		}
+	}
+
+	return result;
+}
+
 static std::string WriteDoc(yyjson_mut_doc *doc) {
 	char *json = yyjson_mut_write(doc, 0, nullptr);
 	if (!json) {
@@ -284,7 +324,7 @@ std::string ParseOpenAIResponse(const std::string &response_body, std::string &e
 
 	std::string result = yyjson_get_str(content);
 	yyjson_doc_free(doc);
-	return result;
+	return StripMarkdownCodeBlock(result);
 }
 
 std::string ParseGeminiResponse(const std::string &response_body, std::string &error_out) {
@@ -354,7 +394,7 @@ std::string ParseGeminiResponse(const std::string &response_body, std::string &e
 
 	std::string result = yyjson_get_str(text);
 	yyjson_doc_free(doc);
-	return result;
+	return StripMarkdownCodeBlock(result);
 }
 
 std::string ParseCloudflareResponse(const std::string &response_body, std::string &error_out) {
@@ -403,7 +443,7 @@ std::string ParseCloudflareResponse(const std::string &response_body, std::strin
 
 	std::string result_str = yyjson_get_str(response);
 	yyjson_doc_free(doc);
-	return result_str;
+	return StripMarkdownCodeBlock(result_str);
 }
 
 LlmProvider ParseProvider(const std::string &provider_str) {
