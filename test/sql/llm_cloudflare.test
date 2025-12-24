@@ -1,0 +1,33 @@
+# name: test/sql/llm_cloudflare.test
+# description: test llm extension with Cloudflare Workers AI
+# group: [sql]
+
+require llm
+
+require-env CLOUDFLARE_API_TOKEN
+
+require-env CLOUDFLARE_ACCOUNT_ID
+
+# Test llm() with Cloudflare provider
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Say hello in one word', provider := 'cloudflare');
+----
+true	ok
+
+# Test with different model
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('What is 2+2? Reply with just the number', provider := 'cloudflare', model := '@cf/meta/llama-3.1-8b-instruct');
+----
+true	ok
+
+# Test with system prompt
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Introduce yourself', provider := 'cloudflare', system_prompt := 'You are a friendly robot named Beep.');
+----
+true	ok
+
+# Test with temperature
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Tell me something', provider := 'cloudflare', temperature := 0.5);
+----
+true	ok

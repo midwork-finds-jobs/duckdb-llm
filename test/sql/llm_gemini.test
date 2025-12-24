@@ -1,0 +1,44 @@
+# name: test/sql/llm_gemini.test
+# description: test llm extension with Gemini API
+# group: [sql]
+
+require llm
+
+require-env GEMINI_API_KEY
+
+# Test llm() with Gemini provider
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Say hello in one word', provider := 'gemini');
+----
+true	ok
+
+# Test with custom model
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('What is 1+1? Reply with just the number', provider := 'gemini', model := 'gemini-2.0-flash');
+----
+true	ok
+
+# Test with system prompt
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('What are you?', provider := 'gemini', system_prompt := 'You are a robot. Always beep boop.');
+----
+true	ok
+
+# Test with temperature
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Tell me a random fact', provider := 'gemini', temperature := 0.8);
+----
+true	ok
+
+# Test prompt() with Gemini via config
+statement ok
+SET llm_default_provider = 'gemini';
+
+query I
+SELECT length(prompt('Say hi')) > 0;
+----
+true
+
+# Reset to local
+statement ok
+SET llm_default_provider = 'local';

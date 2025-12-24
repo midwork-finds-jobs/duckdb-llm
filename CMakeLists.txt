@@ -21,6 +21,8 @@ set(EXTENSION_SOURCES
     src/prompt_function.cpp
     src/llm_config.cpp
     src/providers.cpp
+    src/llm_batch.cpp
+    src/llm_batch_cache.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

@@ -2,6 +2,8 @@
 #include "providers.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/common/exception.hpp"
 
 namespace duckdb {
@@ -111,25 +113,34 @@ static std::string ExecutePrompt(ClientContext &context, const std::string &prom
 		throw InvalidInputException("Unsupported provider for prompt()");
 	}
 
-	// Escape for SQL
-	std::string escaped_body = EscapeJsonString(request_body);
+	// Escape for SQL - only need to escape single quotes, not JSON escaping
+	std::string escaped_body = StringUtil::Replace(request_body, "'", "''");
 	std::string escaped_url = StringUtil::Replace(url, "'", "''");
 
-	// Build SQL query
+	// Build SQL query using http_post table function
+	// Use decode() to convert BLOB body to proper VARCHAR
 	std::string query;
 	if (auth_header.empty()) {
-		query = StringUtil::Format("SELECT status, body FROM (SELECT (http_post('%s', '%s', "
-		                           "headers := {'Content-Type': 'application/json'})).*)",
+		query = StringUtil::Format("SELECT status, decode(body) AS body FROM http_post('%s', "
+		                           "body := '%s', "
+		                           "headers := {'Content-Type': 'application/json'})",
 		                           escaped_url, escaped_body);
 	} else {
 		std::string escaped_auth = StringUtil::Replace(auth_header, "'", "''");
-		query = StringUtil::Format("SELECT status, body FROM (SELECT (http_post('%s', '%s', "
-		                           "headers := {'Content-Type': 'application/json', 'Authorization': '%s'})).*)",
+		query = StringUtil::Format("SELECT status, decode(body) AS body FROM http_post('%s', "
+		                           "body := '%s', "
+		                           "headers := {'Content-Type': 'application/json', 'Authorization': '%s'})",
 		                           escaped_url, escaped_body, escaped_auth);
 	}
 
-	// Execute
-	auto result = context.Query(query, false);
+	// Execute using a separate connection to avoid deadlock
+	auto &db = DatabaseInstance::GetDatabase(context);
+	Connection conn(db);
+
+	// Load http_request in this connection
+	conn.Query("LOAD http_request");
+
+	auto result = conn.Query(query);
 	if (result->HasError()) {
 		throw IOException("LLM request failed: " + result->GetError());
 	}

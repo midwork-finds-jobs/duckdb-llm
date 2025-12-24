@@ -1,0 +1,38 @@
+# name: test/sql/llm_batch.test
+# description: Test LLM batch API functions
+# group: [llm]
+
+require llm
+
+# Test batch list - should be empty initially
+query IIIIIIII
+SELECT batch_id, provider, batch_name, model, status, total, completed, failed FROM llm_batch_list()
+----
+
+# Test batch list with provider filter
+query IIIIIIII
+SELECT batch_id, provider, batch_name, model, status, total, completed, failed FROM llm_batch_list(provider := 'openai')
+----
+
+# Test batch status for non-existent batch (returns empty)
+query IIIIIIII
+SELECT batch_id, provider, batch_name, model, status, total, completed, failed FROM llm_batch_status('fake-batch-id')
+----
+
+# Test batch results for non-existent batch (returns error row)
+query IIII
+SELECT request_id, response, status, error_message FROM llm_batch_results('fake-batch-id')
+----
+NULL	NULL	error	Batch job not found: fake-batch-id
+
+# Test batch cancel for non-existent batch (should return cancelled=false)
+query II
+SELECT batch_id, cancelled FROM llm_batch_cancel('fake-batch-id')
+----
+fake-batch-id	false
+
+# Test batch wait for non-existent batch (returns not_found status)
+query IIIIII
+SELECT batch_id, status, total, completed, failed, timed_out FROM llm_batch_wait('fake-batch-id', timeout_seconds := 1)
+----
+NULL	not_found	0	0	0	false

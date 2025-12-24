@@ -2,6 +2,8 @@
 #include "providers.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/common/exception.hpp"
@@ -272,25 +274,34 @@ static unique_ptr<GlobalTableFunctionState> LlmInitGlobal(ClientContext &context
 		break;
 	}
 
-	// Escape for SQL
-	std::string escaped_body = EscapeJsonString(request_body);
+	// Escape for SQL - only need to escape single quotes, not JSON escaping
+	std::string escaped_body = StringUtil::Replace(request_body, "'", "''");
 	std::string escaped_url = StringUtil::Replace(url, "'", "''");
 
-	// Build SQL query to call http_post
+	// Build SQL query to call http_post table function
+	// Use decode() to convert BLOB body to proper VARCHAR
 	std::string query;
 	if (auth_header.empty()) {
-		query = StringUtil::Format("SELECT status, body FROM (SELECT (http_post('%s', '%s', "
-		                           "headers := {'Content-Type': 'application/json'})).*)",
+		query = StringUtil::Format("SELECT status, decode(body) AS body FROM http_post('%s', "
+		                           "body := '%s', "
+		                           "headers := {'Content-Type': 'application/json'})",
 		                           escaped_url, escaped_body);
 	} else {
 		std::string escaped_auth = StringUtil::Replace(auth_header, "'", "''");
-		query = StringUtil::Format("SELECT status, body FROM (SELECT (http_post('%s', '%s', "
-		                           "headers := {'Content-Type': 'application/json', 'Authorization': '%s'})).*)",
+		query = StringUtil::Format("SELECT status, decode(body) AS body FROM http_post('%s', "
+		                           "body := '%s', "
+		                           "headers := {'Content-Type': 'application/json', 'Authorization': '%s'})",
 		                           escaped_url, escaped_body, escaped_auth);
 	}
 
-	// Execute HTTP request via SQL
-	auto result = context.Query(query, false);
+	// Execute HTTP request via SQL using a separate connection to avoid deadlock
+	auto &db = DatabaseInstance::GetDatabase(context);
+	Connection conn(db);
+
+	// Load http_request in this connection
+	conn.Query("LOAD http_request");
+
+	auto result = conn.Query(query);
 
 	if (result->HasError()) {
 		global_state->response = result->GetError();

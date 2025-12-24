@@ -12,6 +12,7 @@ void RegisterLlmSecrets(ExtensionLoader &loader);
 void RegisterLlmOptions(DatabaseInstance &db);
 void RegisterLlmFunction(ExtensionLoader &loader);
 void RegisterPromptFunction(ExtensionLoader &loader);
+void RegisterBatchFunctions(ExtensionLoader &loader);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	auto &db = loader.GetDatabaseInstance();
@@ -40,6 +41,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register prompt() scalar function
 	RegisterPromptFunction(loader);
+
+	// Register batch functions
+	RegisterBatchFunctions(loader);
 }
 
 void LlmExtension::Load(ExtensionLoader &loader) {

@@ -1,0 +1,35 @@
+# name: test/sql/llm_local.test
+# description: test llm extension with local LM Studio
+# group: [sql]
+
+require llm
+
+# Test llm() with local provider (default)
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Say hello in one word');
+----
+true	ok
+
+# Test with explicit provider
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('What is 2+2? Reply with just the number', provider := 'local');
+----
+true	ok
+
+# Test prompt() scalar function (auto-detects, falls back to local)
+query I
+SELECT length(prompt('Say hi')) > 0;
+----
+true
+
+# Test with temperature
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('Say something random', provider := 'local', temperature := 0.9);
+----
+true	ok
+
+# Test with system prompt
+query II
+SELECT length(response) > 0 as has_response, status FROM llm('What are you?', provider := 'local', system_prompt := 'You are a helpful pirate. Always say arr!');
+----
+true	ok
