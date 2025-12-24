@@ -7,6 +7,7 @@
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/blob.hpp"
 
 namespace duckdb {
 
@@ -332,24 +333,27 @@ static unique_ptr<GlobalTableFunctionState> LlmInitGlobal(ClientContext &context
 		break;
 	}
 
-	// Escape for SQL - only need to escape single quotes, not JSON escaping
-	std::string escaped_body = StringUtil::Replace(request_body, "'", "''");
+	// Escape URL for SQL
 	std::string escaped_url = StringUtil::Replace(url, "'", "''");
 
+	// Base64 encode the body to avoid any escape sequence issues
+	string_t body_str(request_body);
+	std::string base64_body = Blob::ToBase64(body_str);
+
 	// Build SQL query to call http_post table function
-	// Use decode() to convert BLOB body to proper VARCHAR
+	// Use from_base64() to decode the body, then cast to blob for http_post
 	std::string query;
 	if (auth_header.empty()) {
 		query = StringUtil::Format("SELECT status, decode(body) AS body FROM http_post('%s', "
-		                           "body := '%s', "
+		                           "body := from_base64('%s'), "
 		                           "headers := {'Content-Type': 'application/json'})",
-		                           escaped_url, escaped_body);
+		                           escaped_url, base64_body);
 	} else {
 		std::string escaped_auth = StringUtil::Replace(auth_header, "'", "''");
 		query = StringUtil::Format("SELECT status, decode(body) AS body FROM http_post('%s', "
-		                           "body := '%s', "
+		                           "body := from_base64('%s'), "
 		                           "headers := {'Content-Type': 'application/json', 'Authorization': '%s'})",
-		                           escaped_url, escaped_body, escaped_auth);
+		                           escaped_url, base64_body, escaped_auth);
 	}
 
 	// Execute HTTP request via SQL using a separate connection to avoid deadlock
