@@ -48,6 +48,27 @@ Native C++ DuckDB extension for calling LLM APIs directly from SQL.
 | response | VARCHAR | LLM response or error message |
 | status | VARCHAR | 'ok' or 'error' |
 
+## Lateral Join Support
+
+The `llm()` table function supports lateral joins for per-row LLM calls with full named parameter support:
+
+```sql
+-- Process each row with llm() and named parameters
+SELECT t.id, l.response
+FROM my_table t, llm(t.content, provider := 'gemini', model := 'gemini-2.5-flash') l;
+
+-- Or with explicit LATERAL syntax
+SELECT t.id, l.response
+FROM my_table t CROSS JOIN LATERAL llm(t.content, provider := 'openai') l;
+```
+
+**Alternative:** The `prompt()` scalar function auto-detects API keys from environment:
+
+```sql
+-- prompt() works per-row, auto-detects GEMINI_API_KEY from env
+SELECT t.id, prompt(t.content) as response FROM my_table t;
+```
+
 ## Config Resolution Priority
 
 1. Named parameter (e.g., `api_key := 'sk-...'`)
