@@ -2,6 +2,8 @@
 # description: test llm extension with local LM Studio
 # group: [sql]
 
+require http_request
+
 require llm
 
 # Skip in CI - requires local LM Studio running

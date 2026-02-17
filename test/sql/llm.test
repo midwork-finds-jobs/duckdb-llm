@@ -8,6 +8,9 @@ SELECT * FROM llm('test');
 ----
 Catalog Error: Table Function with name llm does not exist!
 
+# http_request must be available for llm to load
+require http_request
+
 # Require statement will ensure this test is run with this extension loaded
 require llm
 

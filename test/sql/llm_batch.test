@@ -2,6 +2,8 @@
 # description: Test LLM batch caching functions
 # group: [sql]
 
+require http_request
+
 require llm
 
 # Test llm_hash function returns consistent hash
