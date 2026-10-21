@@ -1,6 +1,6 @@
 # name: test/sql/llm_batch.test
 # description: Test LLM batch caching functions
-# group: [llm]
+# group: [sql]
 
 require llm
 
