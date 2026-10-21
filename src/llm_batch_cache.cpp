@@ -391,8 +391,8 @@ struct LlmAndCacheBindData : public FunctionData {
 	}
 };
 
-static unique_ptr<FunctionData> LlmAndCacheBind(ClientContext &context, ScalarFunction &bound_function,
-                                                vector<unique_ptr<Expression>> &arguments) {
+static unique_ptr<FunctionData> LlmAndCacheBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	auto bind_data = make_uniq<LlmAndCacheBindData>();
 	bind_data->context = &context;
 	EnsureBatchCacheTableExists(context);
@@ -400,7 +400,7 @@ static unique_ptr<FunctionData> LlmAndCacheBind(ClientContext &context, ScalarFu
 }
 
 static void LlmAndCacheFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<LlmAndCacheBindData>();
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<LlmAndCacheBindData>();
 	auto &context = *bind_data.context;
 	auto &db = DatabaseInstance::GetDatabase(context);
 
@@ -416,8 +416,8 @@ static void LlmAndCacheFunction(DataChunk &args, ExpressionState &state, Vector 
 	auto models = UnifiedVectorFormat::GetData<string_t>(model_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	Connection conn(db);
 
@@ -492,8 +492,8 @@ struct LlmBatchAndCacheBindData : public FunctionData {
 	}
 };
 
-static unique_ptr<FunctionData> LlmBatchAndCacheBind(ClientContext &context, ScalarFunction &bound_function,
-                                                     vector<unique_ptr<Expression>> &arguments) {
+static unique_ptr<FunctionData> LlmBatchAndCacheBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	auto bind_data = make_uniq<LlmBatchAndCacheBindData>();
 	bind_data->context = &context;
 	EnsureBatchCacheTableExists(context);
@@ -501,7 +501,7 @@ static unique_ptr<FunctionData> LlmBatchAndCacheBind(ClientContext &context, Sca
 }
 
 static void LlmBatchAndCacheFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<LlmBatchAndCacheBindData>();
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<LlmBatchAndCacheBindData>();
 	auto &context = *bind_data.context;
 	auto &db = DatabaseInstance::GetDatabase(context);
 
@@ -517,8 +517,8 @@ static void LlmBatchAndCacheFunction(DataChunk &args, ExpressionState &state, Ve
 	auto models = UnifiedVectorFormat::GetData<string_t>(model_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	Connection conn(db);
 	std::string last_provider;
@@ -598,8 +598,8 @@ static void LlmHashFunction(DataChunk &args, ExpressionState &state, Vector &res
 	auto models = UnifiedVectorFormat::GetData<string_t>(model_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto prompt_idx = prompt_data.sel->get_index(i);

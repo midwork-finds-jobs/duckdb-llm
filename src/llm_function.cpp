@@ -70,7 +70,7 @@ static std::string ResolveConfig(ClientContext &context, const std::string &para
 
 	// 3. Secret
 	if (secret && !secret_key.empty()) {
-		Value secret_val = secret->TryGetValue(secret_key, false);
+		Value secret_val = secret->TryGetValue(Identifier(secret_key), false);
 		if (!secret_val.IsNull()) {
 			return secret_val.ToString();
 		}
@@ -276,7 +276,7 @@ static std::pair<std::string, std::string> ExecuteLlmRequest(ClientContext &cont
 
 // Bind function
 static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<LlmBindData>();
 
 	// Parse named parameters (works for standard calls)
@@ -287,7 +287,7 @@ static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBin
 	std::string param_account_id;
 
 	for (auto &kv : input.named_parameters) {
-		auto key = StringUtil::Lower(kv.first);
+		auto key = StringUtil::Lower(kv.first.GetIdentifierName());
 		if (key == "provider") {
 			provider_str = kv.second.GetValue<std::string>();
 		} else if (key == "model") {
@@ -335,7 +335,7 @@ static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBin
 
 		// Store column indices for named parameters (values extracted at execution time)
 		for (idx_t i = 1; i < input.input_table_names.size(); i++) {
-			auto key = StringUtil::Lower(input.input_table_names[i]);
+			auto key = StringUtil::Lower(input.input_table_names[i].GetIdentifierName());
 			if (!key.empty()) {
 				bind_data->param_column_indices[key] = i;
 			}
@@ -612,21 +612,20 @@ void RegisterLlmFunction(ExtensionLoader &loader) {
 	llm_func.in_out_function = LlmInOutFunction;
 
 	// Allow varargs for lateral join named params (they become additional columns)
-	llm_func.varargs = LogicalType::ANY;
-
-	// Add named parameters
-	llm_func.named_parameters["provider"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["model"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["api_key"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["base_url"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["account_id"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["temperature"] = LogicalType::DOUBLE;
-	llm_func.named_parameters["max_tokens"] = LogicalType::INTEGER;
-	llm_func.named_parameters["json_mode"] = LogicalType::BOOLEAN;
-	llm_func.named_parameters["json_schema"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["return_type"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["reasoning_effort"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["system_prompt"] = LogicalType::VARCHAR;
+	llm_func.GetSignature().AddArgs("args", LogicalType::ANY).WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("provider", LogicalType::VARCHAR);
+		options.Add("model", LogicalType::VARCHAR);
+		options.Add("api_key", LogicalType::VARCHAR);
+		options.Add("base_url", LogicalType::VARCHAR);
+		options.Add("account_id", LogicalType::VARCHAR);
+		options.Add("temperature", LogicalType::DOUBLE);
+		options.Add("max_tokens", LogicalType::INTEGER);
+		options.Add("json_mode", LogicalType::BOOLEAN);
+		options.Add("json_schema", LogicalType::VARCHAR);
+		options.Add("return_type", LogicalType::VARCHAR);
+		options.Add("reasoning_effort", LogicalType::VARCHAR);
+		options.Add("system_prompt", LogicalType::VARCHAR);
+	});
 
 	loader.RegisterFunction(llm_func);
 }
