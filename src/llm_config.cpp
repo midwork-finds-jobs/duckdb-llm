@@ -7,7 +7,7 @@ namespace duckdb {
 // Helper function to get config value from DuckDB settings
 std::string GetLlmConfig(ClientContext &context, const std::string &key) {
 	Value result;
-	if (context.TryGetCurrentSetting(key, result)) {
+	if (context.TryGetCurrentSetting(Identifier(key), result)) {
 		if (!result.IsNull()) {
 			return result.ToString();
 		}
