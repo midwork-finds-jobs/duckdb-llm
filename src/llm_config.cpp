@@ -1,8 +1,12 @@
 #include "llm_extension.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/common/exception.hpp"
 
 namespace duckdb {
+
+void EnsureHttpRequestLoaded(Connection &conn);
 
 // Helper function to get config value from DuckDB settings
 std::string GetLlmConfig(ClientContext &context, const std::string &key) {
@@ -13,6 +17,34 @@ std::string GetLlmConfig(ClientContext &context, const std::string &key) {
 		}
 	}
 	return "";
+}
+
+void EnsureHttpRequestLoaded(Connection &conn) {
+	if (DatabaseInstance::GetDatabase(*conn.context).ExtensionIsLoaded("http_request")) {
+		return;
+	}
+	auto result = conn.Query("LOAD http_request");
+	if (result->HasError()) {
+		throw IOException("llm requires the http_request extension, which could not be loaded (%s). "
+		                  "Install it with: INSTALL http_request FROM community",
+		                  result->GetError());
+	}
+}
+
+double GetLlmDefaultTemperature(ClientContext &context) {
+	Value result;
+	if (context.TryGetCurrentSetting(Identifier("llm_default_temperature"), result) && !result.IsNull()) {
+		return result.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
+	}
+	return 0.0;
+}
+
+int GetLlmDefaultMaxTokens(ClientContext &context) {
+	Value result;
+	if (context.TryGetCurrentSetting(Identifier("llm_default_max_tokens"), result) && !result.IsNull()) {
+		return result.DefaultCastAs(LogicalType::INTEGER).GetValue<int>();
+	}
+	return 1024;
 }
 
 void RegisterLlmOptions(DatabaseInstance &db) {

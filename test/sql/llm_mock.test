@@ -1,0 +1,151 @@
+# name: test/sql/llm_mock.test
+# description: llm() / prompt() against the deterministic mock server (scripts/mock_llm_server.py)
+# group: [sql]
+
+require http_request
+
+require llm
+
+require-env LLM_MOCK_URL
+
+statement ok
+SET llm_base_url = '{LLM_MOCK_URL}';
+
+# Local provider honours llm_base_url
+query II
+SELECT response, status FROM llm('hello', model := 'm1');
+----
+openai|m1|hello|t=0|mt=1024|sys=|fmt=|auth=	ok
+
+# Typed params are sent
+query II
+SELECT response, status FROM llm('hello', model := 'm1', temperature := 0.5, max_tokens := 7, system_prompt := 'be brief', json_mode := true);
+----
+openai|m1|hello|t=0.5|mt=7|sys=be brief|fmt=json_object|auth=	ok
+
+# OpenAI
+query II
+SELECT response, status FROM llm('hi', provider := 'openai', api_key := 'k1', base_url := '{LLM_MOCK_URL}');
+----
+openai|gpt-4o-mini|hi|t=0|mt=1024|sys=|fmt=|auth=k1	ok
+
+# return_type builds a json_schema response format
+query II
+SELECT response, status FROM llm('hi', provider := 'openai', api_key := 'k1', base_url := '{LLM_MOCK_URL}', return_type := 'INTEGER');
+----
+openai|gpt-4o-mini|hi|t=0|mt=1024|sys=|fmt=json_schema|auth=k1	ok
+
+# Gemini
+query II
+SELECT response, status FROM llm('hi', provider := 'gemini', api_key := 'gk', base_url := '{LLM_MOCK_URL}', model := 'gemini-x', system_prompt := 'sp');
+----
+gemini|gemini-x|hi|t=0|sys=sp|key=gk	ok
+
+# Cloudflare
+query II
+SELECT response, status FROM llm('hi', provider := 'cloudflare', api_key := 'ck', account_id := 'acc', base_url := '{LLM_MOCK_URL}', model := '@cf/x', max_tokens := 5);
+----
+cloudflare|acc|@cf/x|hi|mt=5|sys=	ok
+
+# Error paths: HTTP 500, malformed JSON, non-string content
+query II
+SELECT starts_with(response, 'HTTP 500'), status FROM llm('please FAIL');
+----
+true	error
+
+query II
+SELECT response, status FROM llm('MALFORMED please');
+----
+Failed to parse response JSON	error
+
+query II
+SELECT response, status FROM llm('NONSTRING please');
+----
+Invalid 'content' value in response	error
+
+query II
+SELECT response, status FROM llm('NONSTRING please', provider := 'gemini', api_key := 'gk', base_url := '{LLM_MOCK_URL}');
+----
+Invalid 'text' value in response	error
+
+query II
+SELECT response, status FROM llm('NONSTRING please', provider := 'cloudflare', api_key := 'ck', account_id := 'a', base_url := '{LLM_MOCK_URL}');
+----
+Invalid 'response' value in result	error
+
+# Missing API key
+statement error
+SELECT * FROM llm('hi', provider := 'openai', base_url := '{LLM_MOCK_URL}');
+----
+OpenAI API key required
+
+# prompt() honours llm_base_url and default settings
+statement ok
+SET llm_default_temperature = 0.25;
+
+statement ok
+SET llm_default_max_tokens = 99;
+
+query I
+SELECT prompt('hey');
+----
+openai|default|hey|t=0.25|mt=99|sys=|fmt=|auth=
+
+statement ok
+RESET llm_default_temperature;
+
+statement ok
+RESET llm_default_max_tokens;
+
+statement error
+SELECT prompt('please FAIL');
+----
+LLM HTTP 500
+
+# LATERAL: per-row prompts and params, results stay associated with their row
+statement ok
+CREATE TABLE prompts AS SELECT * FROM (VALUES
+    (1, 'alpha', 'm-a', 0.5, 10, 'local'),
+    (2, 'beta', 'm-b', 0.75, 20, 'local'),
+    (3, 'gamma FAIL', 'm-c', 1.0, 30, 'local'),
+    (4, 'delta', 'm-d', 0.0, 40, 'openai')
+) t(id, p, model, temp, mt, provider);
+
+query III
+SELECT t.id, l.response, l.status FROM prompts t, llm(t.p) l ORDER BY t.id;
+----
+1	openai|default|alpha|t=0|mt=1024|sys=|fmt=|auth=	ok
+2	openai|default|beta|t=0|mt=1024|sys=|fmt=|auth=	ok
+3	HTTP 500: {"error":{"message":"mock failure"}}	error
+4	openai|default|delta|t=0|mt=1024|sys=|fmt=|auth=	ok
+
+query III
+SELECT t.id, l.response, l.status FROM prompts t, llm(t.p, model := t.model, temperature := t.temp, max_tokens := t.mt) l WHERE t.id <> 3 ORDER BY t.id;
+----
+1	openai|m-a|alpha|t=0.5|mt=10|sys=|fmt=|auth=	ok
+2	openai|m-b|beta|t=0.75|mt=20|sys=|fmt=|auth=	ok
+4	openai|m-d|delta|t=0|mt=40|sys=|fmt=|auth=	ok
+
+# Per-row provider + api_key: openai row gets defaults resolved (model, base_url from param)
+query III
+SELECT t.id, l.response, l.status FROM prompts t, llm(t.p, provider := t.provider, api_key := 'rk', base_url := '{LLM_MOCK_URL}') l WHERE t.id IN (1, 4) ORDER BY t.id;
+----
+1	openai|default|alpha|t=0|mt=1024|sys=|fmt=|auth=	ok
+4	openai|gpt-4o-mini|delta|t=0|mt=1024|sys=|fmt=|auth=rk	ok
+
+# llm_and_cache() honours llm_openai_base_url and caches the response
+statement ok
+SET llm_openai_base_url = '{LLM_MOCK_URL}';
+
+statement ok
+SET llm_openai_api_key = 'ck1';
+
+query I
+SELECT llm_and_cache('cached prompt', 'gpt-test');
+----
+openai|gpt-test|cached prompt|t=0|mt=1024|sys=|fmt=|auth=ck1
+
+query II
+SELECT response, status FROM __llm_cache WHERE prompt = 'cached prompt';
+----
+openai|gpt-test|cached prompt|t=0|mt=1024|sys=|fmt=|auth=ck1	completed

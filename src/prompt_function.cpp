@@ -8,8 +8,12 @@
 
 namespace duckdb {
 
+void EnsureHttpRequestLoaded(Connection &conn);
+
 // Forward declaration
 std::string GetLlmConfig(ClientContext &context, const std::string &key);
+double GetLlmDefaultTemperature(ClientContext &context);
+int GetLlmDefaultMaxTokens(ClientContext &context);
 
 // Helper to get env var
 static std::string GetEnvVar(const char *name) {
@@ -78,15 +82,34 @@ static std::string ExecutePrompt(ClientContext &context, const std::string &prom
 		}
 	}
 
+	// Apply base_url/model settings
+	LlmProvider prov = ParseProvider(provider);
+	std::string config_model = GetLlmConfig(context, "llm_default_model");
+	if (!config_model.empty()) {
+		model = config_model;
+	}
+	if (prov == LlmProvider::LOCAL) {
+		std::string config_url = GetLlmConfig(context, "llm_base_url");
+		if (!config_url.empty()) {
+			base_url = config_url;
+		}
+	} else if (prov == LlmProvider::OPENAI) {
+		std::string config_url = GetLlmConfig(context, "llm_openai_base_url");
+		if (!config_url.empty()) {
+			base_url = config_url;
+		}
+	}
+	double temperature = GetLlmDefaultTemperature(context);
+	int max_tokens = GetLlmDefaultMaxTokens(context);
+
 	// Build request
 	std::string request_body;
 	std::string url;
 	std::string auth_header;
-	LlmProvider prov = ParseProvider(provider);
 
 	switch (prov) {
 	case LlmProvider::LOCAL:
-		request_body = BuildLocalRequest(prompt, model, 0.0, 1024, false, "");
+		request_body = BuildLocalRequest(prompt, model, temperature, max_tokens, false, "");
 		url = BuildLocalUrl(base_url);
 		auth_header = "";
 		break;
@@ -95,7 +118,7 @@ static std::string ExecutePrompt(ClientContext &context, const std::string &prom
 		if (api_key.empty()) {
 			throw InvalidInputException("OpenAI API key required. Set OPENAI_API_KEY or SET llm_openai_api_key='...'");
 		}
-		request_body = BuildOpenAIRequest(prompt, model, 0.0, 1024, false, "", "", "");
+		request_body = BuildOpenAIRequest(prompt, model, temperature, max_tokens, false, "", "", "");
 		url = BuildOpenAIUrl(base_url);
 		auth_header = "Bearer " + api_key;
 		break;
@@ -104,7 +127,7 @@ static std::string ExecutePrompt(ClientContext &context, const std::string &prom
 		if (api_key.empty()) {
 			throw InvalidInputException("Gemini API key required. Set GEMINI_API_KEY or SET llm_gemini_api_key='...'");
 		}
-		request_body = BuildGeminiRequest(prompt, model, 0.0, false, "", "");
+		request_body = BuildGeminiRequest(prompt, model, temperature, false, "", "");
 		url = BuildGeminiUrl(base_url, model, api_key);
 		auth_header = "";
 		break;
@@ -138,7 +161,7 @@ static std::string ExecutePrompt(ClientContext &context, const std::string &prom
 	Connection conn(db);
 
 	// Load http_request in this connection
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto result = conn.Query(query);
 	if (result->HasError()) {
