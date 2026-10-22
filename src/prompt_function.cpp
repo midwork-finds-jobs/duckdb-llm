@@ -217,6 +217,8 @@ static void PromptScalarFunction(DataChunk &args, ExpressionState &state, Vector
 
 void RegisterPromptFunction(ExtensionLoader &loader) {
 	auto prompt_func = ScalarFunction("prompt", {LogicalType::VARCHAR}, LogicalType::VARCHAR, PromptScalarFunction);
+	prompt_func.SetFallible();
+	prompt_func.SetVolatile();
 	loader.RegisterFunction(prompt_func);
 }
 
