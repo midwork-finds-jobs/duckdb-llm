@@ -308,7 +308,8 @@ static bool ApplyLlmParam(LlmRawParams &params, const std::string &key_p, const 
 	} else if (key == "account_id") {
 		params.account_id = val.IsNull() ? params.account_id : val.ToString();
 	} else if (key == "temperature") {
-		params.temperature = val.IsNull() ? params.temperature : val.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
+		params.temperature =
+		    val.IsNull() ? params.temperature : val.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
 	} else if (key == "max_tokens") {
 		params.max_tokens = val.IsNull() ? params.max_tokens : val.DefaultCastAs(LogicalType::INTEGER).GetValue<int>();
 	} else if (key == "json_mode") {
@@ -357,8 +358,8 @@ static void ResolveLlmParams(ClientContext &context, const LlmRawParams &params,
 
 	switch (out.provider) {
 	case LlmProvider::LOCAL:
-		out.base_url =
-		    ResolveConfig(context, params.base_url, "llm_base_url", "", ProviderDefaults::LOCAL_URL, secret, "base_url");
+		out.base_url = ResolveConfig(context, params.base_url, "llm_base_url", "", ProviderDefaults::LOCAL_URL, secret,
+		                             "base_url");
 		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::LOCAL_MODEL, secret,
 		                          "model");
 		out.api_key = params.api_key;
@@ -369,8 +370,8 @@ static void ResolveLlmParams(ClientContext &context, const LlmRawParams &params,
 		                             secret, "base_url");
 		out.api_key =
 		    ResolveConfig(context, params.api_key, "llm_openai_api_key", "OPENAI_API_KEY", "", secret, "api_key");
-		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::OPENAI_MODEL, secret,
-		                          "model");
+		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::OPENAI_MODEL,
+		                          secret, "model");
 		if (out.api_key.empty()) {
 			throw InvalidInputException("OpenAI API key required. Set OPENAI_API_KEY env, use api_key parameter, "
 			                            "SET llm_openai_api_key='...', or CREATE SECRET");
@@ -378,11 +379,12 @@ static void ResolveLlmParams(ClientContext &context, const LlmRawParams &params,
 		break;
 
 	case LlmProvider::GEMINI:
-		out.base_url = ResolveConfig(context, params.base_url, "", "", ProviderDefaults::GEMINI_URL, secret, "base_url");
+		out.base_url =
+		    ResolveConfig(context, params.base_url, "", "", ProviderDefaults::GEMINI_URL, secret, "base_url");
 		out.api_key =
 		    ResolveConfig(context, params.api_key, "llm_gemini_api_key", "GEMINI_API_KEY", "", secret, "api_key");
-		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::GEMINI_MODEL, secret,
-		                          "model");
+		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::GEMINI_MODEL,
+		                          secret, "model");
 		if (out.api_key.empty()) {
 			throw InvalidInputException("Gemini API key required. Set GEMINI_API_KEY env, use api_key parameter, "
 			                            "SET llm_gemini_api_key='...', or CREATE SECRET");
@@ -394,8 +396,8 @@ static void ResolveLlmParams(ClientContext &context, const LlmRawParams &params,
 		    ResolveConfig(context, params.base_url, "", "", ProviderDefaults::CLOUDFLARE_URL, secret, "base_url");
 		out.api_key = ResolveConfig(context, params.api_key, "llm_cloudflare_api_key", "CLOUDFLARE_API_TOKEN", "",
 		                            secret, "api_key");
-		out.account_id = ResolveConfig(context, params.account_id, "llm_cloudflare_account_id",
-		                               "CLOUDFLARE_ACCOUNT_ID", "", secret, "account_id");
+		out.account_id = ResolveConfig(context, params.account_id, "llm_cloudflare_account_id", "CLOUDFLARE_ACCOUNT_ID",
+		                               "", secret, "account_id");
 		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::CLOUDFLARE_MODEL,
 		                          secret, "model");
 		if (out.api_key.empty()) {
