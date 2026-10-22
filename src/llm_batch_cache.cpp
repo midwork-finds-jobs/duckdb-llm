@@ -636,11 +636,15 @@ void RegisterBatchCacheFunctions(ExtensionLoader &loader) {
 	// llm_and_cache(prompt, model) -> VARCHAR (immediate with caching)
 	ScalarFunction llm_cache_func("llm_and_cache", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
 	                              LlmAndCacheFunction, LlmAndCacheBind);
+	llm_cache_func.SetFallible();
+	llm_cache_func.SetVolatile();
 	loader.RegisterFunction(llm_cache_func);
 
 	// llm_batch_and_cache(prompt, model) -> VARCHAR (batch API with caching)
 	ScalarFunction batch_cache_func("llm_batch_and_cache", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                LogicalType::VARCHAR, LlmBatchAndCacheFunction, LlmBatchAndCacheBind);
+	batch_cache_func.SetFallible();
+	batch_cache_func.SetVolatile();
 	loader.RegisterFunction(batch_cache_func);
 
 	// llm_hash(prompt, model) -> VARCHAR

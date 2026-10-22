@@ -2,11 +2,11 @@
 # description: llm() / prompt() against the deterministic mock server (scripts/mock_llm_server.py)
 # group: [sql]
 
+require-env LLM_MOCK_URL
+
 require http_request
 
 require llm
-
-require-env LLM_MOCK_URL
 
 statement ok
 SET llm_base_url = '{LLM_MOCK_URL}';
