@@ -11,8 +11,26 @@
 
 namespace duckdb {
 
+void EnsureHttpRequestLoaded(Connection &conn);
+
 // Forward declaration
 std::string GetLlmConfig(ClientContext &context, const std::string &key);
+
+// Raw (unresolved) llm() parameters, as passed by the caller
+struct LlmRawParams {
+	std::string provider;
+	std::string model;
+	std::string api_key;
+	std::string base_url;
+	std::string account_id;
+	double temperature = 0.0;
+	int max_tokens = 1024;
+	bool json_mode = false;
+	std::string json_schema;
+	std::string return_type;
+	std::string reasoning_effort;
+	std::string system_prompt;
+};
 
 // Bind data for llm() table function
 struct LlmBindData : public TableFunctionData {
@@ -31,8 +49,10 @@ struct LlmBindData : public TableFunctionData {
 	std::string reasoning_effort;
 	std::string system_prompt;
 
-	// Column indices for lateral join named params (extracted at execution)
-	unordered_map<std::string, idx_t> param_column_indices;
+	// Constant named params, kept for per-row resolution
+	LlmRawParams raw_params;
+	// Lateral join named param columns (name, input column index), in declaration order
+	vector<std::pair<std::string, idx_t>> param_columns;
 };
 
 // Global state for llm() table function
@@ -70,7 +90,7 @@ static std::string ResolveConfig(ClientContext &context, const std::string &para
 
 	// 3. Secret
 	if (secret && !secret_key.empty()) {
-		Value secret_val = secret->TryGetValue(secret_key, false);
+		Value secret_val = secret->TryGetValue(Identifier(secret_key), false);
 		if (!secret_val.IsNull()) {
 			return secret_val.ToString();
 		}
@@ -229,7 +249,7 @@ static std::pair<std::string, std::string> ExecuteLlmRequest(ClientContext &cont
 	Connection conn(db);
 
 	// Load http_request in this connection
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto result = conn.Query(query);
 
@@ -274,147 +294,117 @@ static std::pair<std::string, std::string> ExecuteLlmRequest(ClientContext &cont
 	return {content, "ok"};
 }
 
-// Bind function
-static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
-	auto bind_data = make_uniq<LlmBindData>();
-
-	// Parse named parameters (works for standard calls)
-	std::string provider_str = "local";
-	std::string param_api_key;
-	std::string param_base_url;
-	std::string param_model;
-	std::string param_account_id;
-
-	for (auto &kv : input.named_parameters) {
-		auto key = StringUtil::Lower(kv.first);
-		if (key == "provider") {
-			provider_str = kv.second.GetValue<std::string>();
-		} else if (key == "model") {
-			param_model = kv.second.GetValue<std::string>();
-		} else if (key == "api_key") {
-			param_api_key = kv.second.GetValue<std::string>();
-		} else if (key == "base_url") {
-			param_base_url = kv.second.GetValue<std::string>();
-		} else if (key == "account_id") {
-			param_account_id = kv.second.GetValue<std::string>();
-		} else if (key == "temperature") {
-			bind_data->temperature = kv.second.GetValue<double>();
-		} else if (key == "max_tokens") {
-			bind_data->max_tokens = kv.second.GetValue<int>();
-		} else if (key == "json_mode") {
-			bind_data->json_mode = kv.second.GetValue<bool>();
-		} else if (key == "json_schema") {
-			bind_data->json_schema = kv.second.GetValue<std::string>();
-		} else if (key == "return_type") {
-			bind_data->return_type = kv.second.GetValue<std::string>();
-		} else if (key == "reasoning_effort") {
-			bind_data->reasoning_effort = kv.second.GetValue<std::string>();
-		} else if (key == "system_prompt") {
-			bind_data->system_prompt = kv.second.GetValue<std::string>();
-		}
-	}
-
-	// Determine if prompt is a constant or column reference
-	if (!input.inputs.empty()) {
-		// Check if this is a constant or column reference
-		auto input_type = input.inputs[0].type();
-		if (input_type.id() == LogicalTypeId::VARCHAR) {
-			// Static prompt (constant value)
-			bind_data->prompt = input.inputs[0].GetValue<std::string>();
-			bind_data->prompt_from_input = false;
-		} else {
-			// Column reference will be handled at execution time
-			bind_data->prompt_from_input = true;
-		}
-	} else if (!input.input_table_types.empty()) {
-		// Lateral join: prompt and params come from input DataChunk
-		// When using in_out_function with column refs, DuckDB converts named params to additional columns
-		// input_table_names contains aliases like ["", "provider", "model", ...]
-		bind_data->prompt_from_input = true;
-
-		// Store column indices for named parameters (values extracted at execution time)
-		for (idx_t i = 1; i < input.input_table_names.size(); i++) {
-			auto key = StringUtil::Lower(input.input_table_names[i]);
-			if (!key.empty()) {
-				bind_data->param_column_indices[key] = i;
-			}
-		}
+// Apply one named parameter; returns false if the key is unknown. NULL values are ignored.
+static bool ApplyLlmParam(LlmRawParams &params, const std::string &key_p, const Value &val) {
+	auto key = StringUtil::Lower(key_p);
+	if (key == "provider") {
+		params.provider = val.IsNull() ? params.provider : val.ToString();
+	} else if (key == "model") {
+		params.model = val.IsNull() ? params.model : val.ToString();
+	} else if (key == "api_key") {
+		params.api_key = val.IsNull() ? params.api_key : val.ToString();
+	} else if (key == "base_url") {
+		params.base_url = val.IsNull() ? params.base_url : val.ToString();
+	} else if (key == "account_id") {
+		params.account_id = val.IsNull() ? params.account_id : val.ToString();
+	} else if (key == "temperature") {
+		params.temperature =
+		    val.IsNull() ? params.temperature : val.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
+	} else if (key == "max_tokens") {
+		params.max_tokens = val.IsNull() ? params.max_tokens : val.DefaultCastAs(LogicalType::INTEGER).GetValue<int>();
+	} else if (key == "json_mode") {
+		params.json_mode = val.IsNull() ? params.json_mode : val.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>();
+	} else if (key == "json_schema") {
+		params.json_schema = val.IsNull() ? params.json_schema : val.ToString();
+	} else if (key == "return_type") {
+		params.return_type = val.IsNull() ? params.return_type : val.ToString();
+	} else if (key == "reasoning_effort") {
+		params.reasoning_effort = val.IsNull() ? params.reasoning_effort : val.ToString();
+	} else if (key == "system_prompt") {
+		params.system_prompt = val.IsNull() ? params.system_prompt : val.ToString();
 	} else {
-		throw InvalidInputException("llm() requires at least a prompt argument");
+		return false;
 	}
+	return true;
+}
 
-	// Check runtime config for provider if not specified via param
-	if (provider_str == "local") {
-		std::string config_provider = GetLlmConfig(context, "llm_default_provider");
-		if (!config_provider.empty()) {
-			provider_str = config_provider;
-		}
+// Resolve raw params into a request config: param > runtime config > secret > env > default
+static void ResolveLlmParams(ClientContext &context, const LlmRawParams &params, LlmBindData &out) {
+	out.temperature = params.temperature;
+	out.max_tokens = params.max_tokens;
+	out.json_mode = params.json_mode;
+	out.json_schema = params.json_schema;
+	out.return_type = params.return_type;
+	out.reasoning_effort = params.reasoning_effort;
+	out.system_prompt = params.system_prompt;
+
+	std::string provider_str = params.provider;
+	if (provider_str.empty()) {
+		provider_str = GetLlmConfig(context, "llm_default_provider");
 	}
-
-	// Parse provider
-	bind_data->provider = ParseProvider(provider_str);
+	if (provider_str.empty()) {
+		provider_str = "local";
+	}
+	out.provider = ParseProvider(provider_str);
 
 	// Try to find a matching secret for this provider
 	const KeyValueSecret *secret = nullptr;
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-
-	// Look for secret with scope matching provider
-	auto secret_match = secret_manager.LookupSecret(transaction, ProviderToString(bind_data->provider), "llm");
+	auto secret_match = secret_manager.LookupSecret(transaction, ProviderToString(out.provider), "llm");
 	if (secret_match.HasMatch()) {
 		secret = dynamic_cast<const KeyValueSecret *>(secret_match.secret_entry->secret.get());
 	}
 
-	// Resolve configuration based on provider
-	switch (bind_data->provider) {
+	switch (out.provider) {
 	case LlmProvider::LOCAL:
-		bind_data->base_url =
-		    ResolveConfig(context, param_base_url, "llm_base_url", "", ProviderDefaults::LOCAL_URL, secret, "base_url");
-		bind_data->model = ResolveConfig(context, param_model, "llm_default_model", "", ProviderDefaults::LOCAL_MODEL,
-		                                 secret, "model");
+		out.base_url = ResolveConfig(context, params.base_url, "llm_base_url", "", ProviderDefaults::LOCAL_URL, secret,
+		                             "base_url");
+		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::LOCAL_MODEL, secret,
+		                          "model");
+		out.api_key = params.api_key;
 		break;
 
 	case LlmProvider::OPENAI:
-		bind_data->base_url = ResolveConfig(context, param_base_url, "llm_openai_base_url", "",
-		                                    ProviderDefaults::OPENAI_URL, secret, "base_url");
-		bind_data->api_key =
-		    ResolveConfig(context, param_api_key, "llm_openai_api_key", "OPENAI_API_KEY", "", secret, "api_key");
-		bind_data->model = ResolveConfig(context, param_model, "llm_default_model", "", ProviderDefaults::OPENAI_MODEL,
-		                                 secret, "model");
-		if (bind_data->api_key.empty()) {
+		out.base_url = ResolveConfig(context, params.base_url, "llm_openai_base_url", "", ProviderDefaults::OPENAI_URL,
+		                             secret, "base_url");
+		out.api_key =
+		    ResolveConfig(context, params.api_key, "llm_openai_api_key", "OPENAI_API_KEY", "", secret, "api_key");
+		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::OPENAI_MODEL,
+		                          secret, "model");
+		if (out.api_key.empty()) {
 			throw InvalidInputException("OpenAI API key required. Set OPENAI_API_KEY env, use api_key parameter, "
 			                            "SET llm_openai_api_key='...', or CREATE SECRET");
 		}
 		break;
 
 	case LlmProvider::GEMINI:
-		bind_data->base_url =
-		    ResolveConfig(context, param_base_url, "", "", ProviderDefaults::GEMINI_URL, secret, "base_url");
-		bind_data->api_key =
-		    ResolveConfig(context, param_api_key, "llm_gemini_api_key", "GEMINI_API_KEY", "", secret, "api_key");
-		bind_data->model = ResolveConfig(context, param_model, "llm_default_model", "", ProviderDefaults::GEMINI_MODEL,
-		                                 secret, "model");
-		if (bind_data->api_key.empty()) {
+		out.base_url =
+		    ResolveConfig(context, params.base_url, "", "", ProviderDefaults::GEMINI_URL, secret, "base_url");
+		out.api_key =
+		    ResolveConfig(context, params.api_key, "llm_gemini_api_key", "GEMINI_API_KEY", "", secret, "api_key");
+		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::GEMINI_MODEL,
+		                          secret, "model");
+		if (out.api_key.empty()) {
 			throw InvalidInputException("Gemini API key required. Set GEMINI_API_KEY env, use api_key parameter, "
 			                            "SET llm_gemini_api_key='...', or CREATE SECRET");
 		}
 		break;
 
 	case LlmProvider::CLOUDFLARE:
-		bind_data->base_url =
-		    ResolveConfig(context, param_base_url, "", "", ProviderDefaults::CLOUDFLARE_URL, secret, "base_url");
-		bind_data->api_key = ResolveConfig(context, param_api_key, "llm_cloudflare_api_key", "CLOUDFLARE_API_TOKEN", "",
-		                                   secret, "api_key");
-		bind_data->account_id = ResolveConfig(context, param_account_id, "llm_cloudflare_account_id",
-		                                      "CLOUDFLARE_ACCOUNT_ID", "", secret, "account_id");
-		bind_data->model = ResolveConfig(context, param_model, "llm_default_model", "",
-		                                 ProviderDefaults::CLOUDFLARE_MODEL, secret, "model");
-		if (bind_data->api_key.empty()) {
+		out.base_url =
+		    ResolveConfig(context, params.base_url, "", "", ProviderDefaults::CLOUDFLARE_URL, secret, "base_url");
+		out.api_key = ResolveConfig(context, params.api_key, "llm_cloudflare_api_key", "CLOUDFLARE_API_TOKEN", "",
+		                            secret, "api_key");
+		out.account_id = ResolveConfig(context, params.account_id, "llm_cloudflare_account_id", "CLOUDFLARE_ACCOUNT_ID",
+		                               "", secret, "account_id");
+		out.model = ResolveConfig(context, params.model, "llm_default_model", "", ProviderDefaults::CLOUDFLARE_MODEL,
+		                          secret, "model");
+		if (out.api_key.empty()) {
 			throw InvalidInputException(
 			    "Cloudflare API token required. Set CLOUDFLARE_API_TOKEN env or use api_key parameter");
 		}
-		if (bind_data->account_id.empty()) {
+		if (out.account_id.empty()) {
 			throw InvalidInputException(
 			    "Cloudflare account_id required. Set CLOUDFLARE_ACCOUNT_ID env or use account_id parameter");
 		}
@@ -422,21 +412,57 @@ static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBin
 	}
 
 	// If return_type specified, build JSON schema (provider-specific)
-	if (!bind_data->return_type.empty() && bind_data->json_schema.empty()) {
-		if (bind_data->provider == LlmProvider::GEMINI) {
-			bind_data->json_schema = BuildGeminiReturnTypeSchema(bind_data->return_type);
+	if (!out.return_type.empty() && out.json_schema.empty()) {
+		if (out.provider == LlmProvider::GEMINI) {
+			out.json_schema = BuildGeminiReturnTypeSchema(out.return_type);
 		} else {
-			bind_data->json_schema = BuildOpenAIReturnTypeSchema(bind_data->return_type);
+			out.json_schema = BuildOpenAIReturnTypeSchema(out.return_type);
 		}
-		bind_data->json_mode = true;
 	}
-
 	// Enable json_mode when json_schema is provided
-	if (!bind_data->json_schema.empty()) {
-		bind_data->json_mode = true;
+	if (!out.json_schema.empty()) {
+		out.json_mode = true;
+	}
+}
+
+// Bind function
+static unique_ptr<FunctionData> LlmBind(ClientContext &context, TableFunctionBindInput &input,
+                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto bind_data = make_uniq<LlmBindData>();
+
+	// Parse constant named parameters
+	for (auto &kv : input.named_parameters) {
+		ApplyLlmParam(bind_data->raw_params, kv.first.GetIdentifierName(), kv.second);
 	}
 
-	// Set return types
+	if (!input.inputs.empty()) {
+		auto input_type = input.inputs[0].type();
+		if (input_type.id() == LogicalTypeId::VARCHAR) {
+			// Static prompt (constant value)
+			bind_data->prompt = input.inputs[0].GetValue<std::string>();
+			bind_data->prompt_from_input = false;
+		} else {
+			bind_data->prompt_from_input = true;
+		}
+	} else if (!input.input_table_types.empty()) {
+		// Lateral join: prompt (column 0) and params come from the input DataChunk
+		// input_table_names contains aliases like ["", "provider", "model", ...]
+		bind_data->prompt_from_input = true;
+		for (idx_t i = 1; i < input.input_table_names.size(); i++) {
+			auto key = StringUtil::Lower(input.input_table_names[i].GetIdentifierName());
+			if (!key.empty()) {
+				bind_data->param_columns.emplace_back(key, i);
+			}
+		}
+	} else {
+		throw InvalidInputException("llm() requires at least a prompt argument");
+	}
+
+	// Without per-row params the config is resolved once here (also validates keys early)
+	if (bind_data->param_columns.empty()) {
+		ResolveLlmParams(context, bind_data->raw_params, *bind_data);
+	}
+
 	names = {"response", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 
@@ -454,119 +480,42 @@ static unique_ptr<LocalTableFunctionState> LlmInitLocal(ExecutionContext &contex
 	return make_uniq<LlmLocalState>();
 }
 
-// Helper to extract string param from input chunk
-static std::string ExtractParamString(DataChunk &input, idx_t col_idx) {
-	if (col_idx >= input.ColumnCount()) {
-		return "";
-	}
-	auto val = input.GetValue(col_idx, 0);
-	if (val.IsNull()) {
-		return "";
-	}
-	return val.GetValue<std::string>();
-}
-
 // Table-in-out function - processes input rows and produces output rows
 // This enables lateral join support: SELECT t.*, l.* FROM my_table t, llm(t.content) l
 static OperatorResultType LlmInOutFunction(ExecutionContext &context, TableFunctionInput &data, DataChunk &input,
                                            DataChunk &output) {
-	auto &orig_bind_data = data.bind_data->Cast<LlmBindData>();
+	auto &bind_data = data.bind_data->Cast<LlmBindData>();
 	auto &client_context = context.client;
 
-	if (input.size() == 0) {
-		output.SetCardinality(0);
-		return OperatorResultType::NEED_MORE_INPUT;
-	}
-
-	// Create a copy of bind_data that we can modify with lateral params
-	LlmBindData bind_data = orig_bind_data;
-
-	// Extract lateral join named parameters from input columns (constant for all rows)
-	std::string new_provider;
-	for (auto &kv : orig_bind_data.param_column_indices) {
-		const std::string &key = kv.first;
-		idx_t col_idx = kv.second;
-		std::string val = ExtractParamString(input, col_idx);
-
-		if (key == "provider" && !val.empty()) {
-			new_provider = val;
-			bind_data.provider = ParseProvider(val);
-			// Clear model/base_url so they get resolved for new provider
-			bind_data.model = "";
-			bind_data.base_url = "";
-		} else if (key == "model" && !val.empty()) {
-			bind_data.model = val;
-		} else if (key == "api_key" && !val.empty()) {
-			bind_data.api_key = val;
-		} else if (key == "base_url" && !val.empty()) {
-			bind_data.base_url = val;
-		} else if (key == "account_id" && !val.empty()) {
-			bind_data.account_id = val;
-		} else if (key == "system_prompt" && !val.empty()) {
-			bind_data.system_prompt = val;
-		} else if (key == "json_schema" && !val.empty()) {
-			bind_data.json_schema = val;
-			bind_data.json_mode = true;
-		} else if (key == "return_type" && !val.empty()) {
-			bind_data.return_type = val;
-		} else if (key == "reasoning_effort" && !val.empty()) {
-			bind_data.reasoning_effort = val;
-		}
-		// Note: temperature, max_tokens, json_mode would need type conversion
-	}
-
-	// If provider was changed via lateral params, resolve api_key from env if not set
-	if (!new_provider.empty() && bind_data.api_key.empty()) {
-		switch (bind_data.provider) {
-		case LlmProvider::OPENAI:
-			bind_data.api_key = GetEnvVar("OPENAI_API_KEY");
-			if (bind_data.base_url.empty()) {
-				bind_data.base_url = ProviderDefaults::OPENAI_URL;
-			}
-			if (bind_data.model.empty()) {
-				bind_data.model = ProviderDefaults::OPENAI_MODEL;
-			}
-			break;
-		case LlmProvider::GEMINI:
-			bind_data.api_key = GetEnvVar("GEMINI_API_KEY");
-			if (bind_data.base_url.empty()) {
-				bind_data.base_url = ProviderDefaults::GEMINI_URL;
-			}
-			if (bind_data.model.empty()) {
-				bind_data.model = ProviderDefaults::GEMINI_MODEL;
-			}
-			break;
-		case LlmProvider::CLOUDFLARE:
-			bind_data.api_key = GetEnvVar("CLOUDFLARE_API_TOKEN");
-			if (bind_data.account_id.empty()) {
-				bind_data.account_id = GetEnvVar("CLOUDFLARE_ACCOUNT_ID");
-			}
-			if (bind_data.base_url.empty()) {
-				bind_data.base_url = ProviderDefaults::CLOUDFLARE_URL;
-			}
-			if (bind_data.model.empty()) {
-				bind_data.model = ProviderDefaults::CLOUDFLARE_MODEL;
-			}
-			break;
-		default:
-			break;
-		}
-	}
-
-	// Process each row in the input chunk
 	idx_t output_idx = 0;
 	for (idx_t row = 0; row < input.size(); row++) {
-		// Get prompt from input (first column)
-		auto prompt = input.GetValue(0, row).GetValue<std::string>();
-
-		// Execute LLM request for this row
-		auto result = ExecuteLlmRequest(client_context, prompt, bind_data);
-		std::string response = result.first;
-		std::string status = result.second;
-
-		// Set output values
-		output.SetValue(0, output_idx, Value(response));
-		output.SetValue(1, output_idx, Value(status));
+		auto prompt_val = input.GetValue(0, row);
+		if (prompt_val.IsNull()) {
+			output.SetValue(0, output_idx, Value());
+			output.SetValue(1, output_idx, Value("error"));
+			output_idx++;
+			continue;
+		}
+		std::pair<std::string, std::string> result;
+		if (bind_data.param_columns.empty()) {
+			result = ExecuteLlmRequest(client_context, prompt_val.ToString(), bind_data);
+		} else {
+			// Per-row params: overlay row values on the constant params, then resolve
+			try {
+				LlmRawParams params = bind_data.raw_params;
+				for (auto &param : bind_data.param_columns) {
+					ApplyLlmParam(params, param.first, input.GetValue(param.second, row));
+				}
+				LlmBindData row_config;
+				ResolveLlmParams(client_context, params, row_config);
+				result = ExecuteLlmRequest(client_context, prompt_val.ToString(), row_config);
+			} catch (std::exception &ex) {
+				ErrorData error(ex);
+				result = {error.RawMessage(), "error"};
+			}
+		}
+		output.SetValue(0, output_idx, Value(result.first));
+		output.SetValue(1, output_idx, Value(result.second));
 		output_idx++;
 	}
 
@@ -612,21 +561,20 @@ void RegisterLlmFunction(ExtensionLoader &loader) {
 	llm_func.in_out_function = LlmInOutFunction;
 
 	// Allow varargs for lateral join named params (they become additional columns)
-	llm_func.varargs = LogicalType::ANY;
-
-	// Add named parameters
-	llm_func.named_parameters["provider"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["model"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["api_key"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["base_url"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["account_id"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["temperature"] = LogicalType::DOUBLE;
-	llm_func.named_parameters["max_tokens"] = LogicalType::INTEGER;
-	llm_func.named_parameters["json_mode"] = LogicalType::BOOLEAN;
-	llm_func.named_parameters["json_schema"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["return_type"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["reasoning_effort"] = LogicalType::VARCHAR;
-	llm_func.named_parameters["system_prompt"] = LogicalType::VARCHAR;
+	llm_func.GetSignature().AddArgs("args", LogicalType::ANY).WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("provider", LogicalType::VARCHAR);
+		options.Add("model", LogicalType::VARCHAR);
+		options.Add("api_key", LogicalType::VARCHAR);
+		options.Add("base_url", LogicalType::VARCHAR);
+		options.Add("account_id", LogicalType::VARCHAR);
+		options.Add("temperature", LogicalType::DOUBLE);
+		options.Add("max_tokens", LogicalType::INTEGER);
+		options.Add("json_mode", LogicalType::BOOLEAN);
+		options.Add("json_schema", LogicalType::VARCHAR);
+		options.Add("return_type", LogicalType::VARCHAR);
+		options.Add("reasoning_effort", LogicalType::VARCHAR);
+		options.Add("system_prompt", LogicalType::VARCHAR);
+	});
 
 	loader.RegisterFunction(llm_func);
 }

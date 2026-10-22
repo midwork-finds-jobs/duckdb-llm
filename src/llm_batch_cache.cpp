@@ -14,8 +14,12 @@ using namespace duckdb_yyjson; // NOLINT
 
 namespace duckdb {
 
+void EnsureHttpRequestLoaded(Connection &conn);
+
 // Forward declarations
 std::string GetLlmConfig(ClientContext &context, const std::string &key);
+double GetLlmDefaultTemperature(ClientContext &context);
+int GetLlmDefaultMaxTokens(ClientContext &context);
 
 static std::string GetEnvVar(const char *name) {
 	const char *val = getenv(name);
@@ -105,11 +109,19 @@ static std::string ExecuteLlmCall(ClientContext &context, const std::string &pro
 		if (api_key.empty()) {
 			api_key = GetEnvVar("OPENAI_API_KEY");
 		}
-		base_url = ProviderDefaults::OPENAI_URL;
+		base_url = GetLlmConfig(context, "llm_openai_base_url");
+		if (base_url.empty()) {
+			base_url = ProviderDefaults::OPENAI_URL;
+		}
 	} else {
 		// Local provider
-		base_url = ProviderDefaults::LOCAL_URL;
+		base_url = GetLlmConfig(context, "llm_base_url");
+		if (base_url.empty()) {
+			base_url = ProviderDefaults::LOCAL_URL;
+		}
 	}
+	double temperature = GetLlmDefaultTemperature(context);
+	int max_tokens = GetLlmDefaultMaxTokens(context);
 
 	// Build request
 	std::string request_body;
@@ -119,7 +131,7 @@ static std::string ExecuteLlmCall(ClientContext &context, const std::string &pro
 
 	switch (prov) {
 	case LlmProvider::LOCAL:
-		request_body = BuildLocalRequest(prompt, model, 0.0, 1024, false, "");
+		request_body = BuildLocalRequest(prompt, model, temperature, max_tokens, false, "");
 		url = BuildLocalUrl(base_url);
 		auth_header = "";
 		break;
@@ -128,7 +140,7 @@ static std::string ExecuteLlmCall(ClientContext &context, const std::string &pro
 		if (api_key.empty()) {
 			throw IOException("OpenAI API key required");
 		}
-		request_body = BuildOpenAIRequest(prompt, model, 0.0, 1024, false, "", "", "");
+		request_body = BuildOpenAIRequest(prompt, model, temperature, max_tokens, false, "", "", "");
 		url = BuildOpenAIUrl(base_url);
 		auth_header = "Bearer " + api_key;
 		break;
@@ -137,7 +149,7 @@ static std::string ExecuteLlmCall(ClientContext &context, const std::string &pro
 		if (api_key.empty()) {
 			throw IOException("Gemini API key required");
 		}
-		request_body = BuildGeminiRequest(prompt, model, 0.0, false, "", "");
+		request_body = BuildGeminiRequest(prompt, model, temperature, false, "", "");
 		url = BuildGeminiUrl(base_url, model, api_key);
 		auth_header = "";
 		break;
@@ -167,7 +179,7 @@ static std::string ExecuteLlmCall(ClientContext &context, const std::string &pro
 	// Execute
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto result = conn.Query(query);
 	if (result->HasError()) {
@@ -391,8 +403,8 @@ struct LlmAndCacheBindData : public FunctionData {
 	}
 };
 
-static unique_ptr<FunctionData> LlmAndCacheBind(ClientContext &context, ScalarFunction &bound_function,
-                                                vector<unique_ptr<Expression>> &arguments) {
+static unique_ptr<FunctionData> LlmAndCacheBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	auto bind_data = make_uniq<LlmAndCacheBindData>();
 	bind_data->context = &context;
 	EnsureBatchCacheTableExists(context);
@@ -400,7 +412,7 @@ static unique_ptr<FunctionData> LlmAndCacheBind(ClientContext &context, ScalarFu
 }
 
 static void LlmAndCacheFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<LlmAndCacheBindData>();
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<LlmAndCacheBindData>();
 	auto &context = *bind_data.context;
 	auto &db = DatabaseInstance::GetDatabase(context);
 
@@ -416,8 +428,8 @@ static void LlmAndCacheFunction(DataChunk &args, ExpressionState &state, Vector 
 	auto models = UnifiedVectorFormat::GetData<string_t>(model_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	Connection conn(db);
 
@@ -492,8 +504,8 @@ struct LlmBatchAndCacheBindData : public FunctionData {
 	}
 };
 
-static unique_ptr<FunctionData> LlmBatchAndCacheBind(ClientContext &context, ScalarFunction &bound_function,
-                                                     vector<unique_ptr<Expression>> &arguments) {
+static unique_ptr<FunctionData> LlmBatchAndCacheBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
 	auto bind_data = make_uniq<LlmBatchAndCacheBindData>();
 	bind_data->context = &context;
 	EnsureBatchCacheTableExists(context);
@@ -501,7 +513,7 @@ static unique_ptr<FunctionData> LlmBatchAndCacheBind(ClientContext &context, Sca
 }
 
 static void LlmBatchAndCacheFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<LlmBatchAndCacheBindData>();
+	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<LlmBatchAndCacheBindData>();
 	auto &context = *bind_data.context;
 	auto &db = DatabaseInstance::GetDatabase(context);
 
@@ -517,8 +529,8 @@ static void LlmBatchAndCacheFunction(DataChunk &args, ExpressionState &state, Ve
 	auto models = UnifiedVectorFormat::GetData<string_t>(model_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	Connection conn(db);
 	std::string last_provider;
@@ -598,8 +610,8 @@ static void LlmHashFunction(DataChunk &args, ExpressionState &state, Vector &res
 	auto models = UnifiedVectorFormat::GetData<string_t>(model_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto prompt_idx = prompt_data.sel->get_index(i);

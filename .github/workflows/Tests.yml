@@ -1,0 +1,56 @@
+#
+# Builds DuckDB + extension from source and runs the SQL tests (incl. mock provider tests).
+# The distribution pipeline links against a prebuilt DuckDB and skips `require llm` tests.
+#
+name: Tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test (linux)
+    runs-on: ubuntu-24.04
+    env:
+      GEN: ninja
+      LLM_MOCK_URL: http://127.0.0.1:18080
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 #v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: sudo apt-get update -y -qq && sudo apt-get install -y -qq ninja-build ccache libssl-dev
+
+      - uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03
+        with:
+          key: tests-${{ github.job }}
+          save: ${{ github.event_name == 'push' }}
+
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa #v10.3.1
+
+      - name: Build
+        run: make release EXTRA_EXTENSION_CONFIGS=${{ github.workspace }}/test/configs/http_request.cmake
+
+      - name: Start mock LLM server
+        run: |
+          nohup uv run --no-project scripts/mock_llm_server.py 18080 > mock.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS "$LLM_MOCK_URL/health" && exit 0; sleep 1; done
+          cat mock.log; exit 1
+
+      - name: Test
+        run: ./build/release/test/unittest "test/*"
+
+      - name: Mock tests must not be skipped
+        run: |
+          out=$(./build/release/test/unittest test/sql/llm_mock.test 2>&1); echo "$out"
+          echo "$out" | grep -q "All tests passed" && ! echo "$out" | grep -qi "skipped"
+
+      - name: Mock server log
+        if: always()
+        run: cat mock.log || true

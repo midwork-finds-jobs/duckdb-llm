@@ -7,6 +7,14 @@ using namespace duckdb_yyjson; // NOLINT
 
 namespace duckdb {
 
+void EnsureHttpRequestLoaded(Connection &conn);
+
+// yyjson_get_str returns NULL for non-string values; never construct std::string from it directly
+static inline std::string SafeJsonStr(yyjson_val *val) {
+	const char *str = yyjson_get_str(val);
+	return str ? std::string(str) : std::string();
+}
+
 // ============================================================================
 // Status Conversion
 // ============================================================================
@@ -429,7 +437,7 @@ std::string OpenAIUploadBatchFile(ClientContext &context, const std::string &jso
                                   const std::string &base_url) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	// OpenAI Files API requires multipart/form-data
 	// http_request extension supports http_post_form for form data
@@ -479,7 +487,7 @@ std::string OpenAIUploadBatchFile(ClientContext &context, const std::string &jso
 
 	std::string file_id;
 	if (id_val && yyjson_is_str(id_val)) {
-		file_id = yyjson_get_str(id_val);
+		file_id = SafeJsonStr(id_val);
 	}
 
 	yyjson_doc_free(doc);
@@ -495,7 +503,7 @@ std::string OpenAICreateBatch(ClientContext &context, const std::string &file_id
                               const std::string &base_url) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	// Build request body
 	yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
@@ -548,7 +556,7 @@ std::string OpenAICreateBatch(ClientContext &context, const std::string &file_id
 
 	std::string batch_id;
 	if (id_val && yyjson_is_str(id_val)) {
-		batch_id = yyjson_get_str(id_val);
+		batch_id = SafeJsonStr(id_val);
 	}
 
 	yyjson_doc_free(resp_doc);
@@ -564,7 +572,7 @@ BatchJobInfo OpenAIGetBatchStatus(ClientContext &context, const std::string &bat
                                   const std::string &base_url) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto escaped_key = StringUtil::Replace(api_key, "'", "''");
 	auto url = base_url + "/v1/batches/" + batch_id;
@@ -604,17 +612,17 @@ BatchJobInfo OpenAIGetBatchStatus(ClientContext &context, const std::string &bat
 
 	yyjson_val *status_val = yyjson_obj_get(root, "status");
 	if (status_val && yyjson_is_str(status_val)) {
-		info.status = ParseOpenAIBatchStatus(yyjson_get_str(status_val));
+		info.status = ParseOpenAIBatchStatus(SafeJsonStr(status_val));
 	}
 
 	yyjson_val *output_file = yyjson_obj_get(root, "output_file_id");
 	if (output_file && yyjson_is_str(output_file)) {
-		info.output_file_id = yyjson_get_str(output_file);
+		info.output_file_id = SafeJsonStr(output_file);
 	}
 
 	yyjson_val *error_file = yyjson_obj_get(root, "error_file_id");
 	if (error_file && yyjson_is_str(error_file)) {
-		info.error_file_id = yyjson_get_str(error_file);
+		info.error_file_id = SafeJsonStr(error_file);
 	}
 
 	yyjson_val *counts = yyjson_obj_get(root, "request_counts");
@@ -642,7 +650,7 @@ std::string OpenAIDownloadFile(ClientContext &context, const std::string &file_i
                                const std::string &base_url) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto escaped_key = StringUtil::Replace(api_key, "'", "''");
 	auto url = base_url + "/v1/files/" + file_id + "/content";
@@ -675,7 +683,7 @@ bool OpenAICancelBatch(ClientContext &context, const std::string &batch_id, cons
                        const std::string &base_url) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto escaped_key = StringUtil::Replace(api_key, "'", "''");
 	auto url = base_url + "/v1/batches/" + batch_id + "/cancel";
@@ -721,7 +729,7 @@ std::vector<BatchResultEntry> ParseOpenAIBatchResults(const std::string &jsonl_c
 		// Get custom_id
 		yyjson_val *custom_id = yyjson_obj_get(root, "custom_id");
 		if (custom_id && yyjson_is_str(custom_id)) {
-			entry.request_id = yyjson_get_str(custom_id);
+			entry.request_id = SafeJsonStr(custom_id);
 		}
 
 		// Check for error
@@ -730,7 +738,7 @@ std::vector<BatchResultEntry> ParseOpenAIBatchResults(const std::string &jsonl_c
 			entry.status = "error";
 			yyjson_val *err_msg = yyjson_obj_get(error, "message");
 			if (err_msg && yyjson_is_str(err_msg)) {
-				entry.error_message = yyjson_get_str(err_msg);
+				entry.error_message = SafeJsonStr(err_msg);
 			}
 		} else {
 			// Get response
@@ -746,7 +754,7 @@ std::vector<BatchResultEntry> ParseOpenAIBatchResults(const std::string &jsonl_c
 							if (message) {
 								yyjson_val *content = yyjson_obj_get(message, "content");
 								if (content && yyjson_is_str(content)) {
-									entry.response = yyjson_get_str(content);
+									entry.response = SafeJsonStr(content);
 									entry.status = "ok";
 								}
 							}
@@ -836,7 +844,7 @@ std::string GeminiUploadBatchFile(ClientContext &context, const std::string &jso
                                   const std::string &api_key) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	// Gemini uses resumable upload protocol
 	// Step 1: Start upload session
@@ -959,7 +967,7 @@ std::string GeminiUploadBatchFile(ClientContext &context, const std::string &jso
 	if (file_obj) {
 		yyjson_val *name_val = yyjson_obj_get(file_obj, "name");
 		if (name_val && yyjson_is_str(name_val)) {
-			file_name = yyjson_get_str(name_val);
+			file_name = SafeJsonStr(name_val);
 		}
 	}
 
@@ -976,7 +984,7 @@ std::string GeminiCreateBatch(ClientContext &context, const std::string &input_s
                               const std::string &api_key) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	// Build request body
 	yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
@@ -1033,7 +1041,7 @@ std::string GeminiCreateBatch(ClientContext &context, const std::string &input_s
 
 	std::string batch_name;
 	if (name_val && yyjson_is_str(name_val)) {
-		batch_name = yyjson_get_str(name_val);
+		batch_name = SafeJsonStr(name_val);
 	}
 
 	yyjson_doc_free(resp_doc);
@@ -1052,7 +1060,7 @@ std::string GeminiCreateBatchInline(ClientContext &context,
                                     const std::string &display_name, double temperature) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto request_body = BuildGeminiInlineBatchBody(requests, display_name, temperature);
 	auto escaped_body = StringUtil::Replace(request_body, "'", "''");
@@ -1091,7 +1099,7 @@ std::string GeminiCreateBatchInline(ClientContext &context,
 
 	std::string batch_name;
 	if (name_val && yyjson_is_str(name_val)) {
-		batch_name = yyjson_get_str(name_val);
+		batch_name = SafeJsonStr(name_val);
 	}
 
 	yyjson_doc_free(resp_doc);
@@ -1106,7 +1114,7 @@ std::string GeminiCreateBatchInline(ClientContext &context,
 BatchJobInfo GeminiGetBatchStatus(ClientContext &context, const std::string &batch_name, const std::string &api_key) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	// batch_name is like "batches/123456"
 	auto url = "https://generativelanguage.googleapis.com/v1beta/" + batch_name;
@@ -1155,7 +1163,7 @@ BatchJobInfo GeminiGetBatchStatus(ClientContext &context, const std::string &bat
 	}
 
 	if (state_val && yyjson_is_str(state_val)) {
-		info.status = ParseGeminiBatchStatus(yyjson_get_str(state_val));
+		info.status = ParseGeminiBatchStatus(SafeJsonStr(state_val));
 	}
 
 	// Get display name
@@ -1164,7 +1172,7 @@ BatchJobInfo GeminiGetBatchStatus(ClientContext &context, const std::string &bat
 		display_name = yyjson_obj_get(root, "display_name");
 	}
 	if (display_name && yyjson_is_str(display_name)) {
-		info.batch_name = yyjson_get_str(display_name);
+		info.batch_name = SafeJsonStr(display_name);
 	}
 
 	// Get output file from dest
@@ -1175,7 +1183,7 @@ BatchJobInfo GeminiGetBatchStatus(ClientContext &context, const std::string &bat
 			file_name = yyjson_obj_get(dest, "file_name");
 		}
 		if (file_name && yyjson_is_str(file_name)) {
-			info.output_file_id = yyjson_get_str(file_name);
+			info.output_file_id = SafeJsonStr(file_name);
 		}
 	}
 
@@ -1186,7 +1194,7 @@ BatchJobInfo GeminiGetBatchStatus(ClientContext &context, const std::string &bat
 std::string GeminiDownloadFile(ClientContext &context, const std::string &file_name, const std::string &api_key) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	// Download file content
 	auto url = "https://generativelanguage.googleapis.com/v1beta/" + file_name + ":download";
@@ -1218,7 +1226,7 @@ std::string GeminiDownloadFile(ClientContext &context, const std::string &file_n
 bool GeminiCancelBatch(ClientContext &context, const std::string &batch_name, const std::string &api_key) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto url = "https://generativelanguage.googleapis.com/v1beta/" + batch_name + ":cancel";
 
@@ -1248,7 +1256,7 @@ std::vector<BatchResultEntry> GeminiGetInlineResults(ClientContext &context, con
 
 	auto &db = DatabaseInstance::GetDatabase(context);
 	Connection conn(db);
-	conn.Query("LOAD http_request");
+	EnsureHttpRequestLoaded(conn);
 
 	auto url = "https://generativelanguage.googleapis.com/v1beta/" + batch_name;
 
@@ -1311,7 +1319,7 @@ std::vector<BatchResultEntry> GeminiGetInlineResults(ClientContext &context, con
 			if (metadata) {
 				yyjson_val *key = yyjson_obj_get(metadata, "key");
 				if (key && yyjson_is_str(key)) {
-					entry.request_id = yyjson_get_str(key);
+					entry.request_id = SafeJsonStr(key);
 				} else {
 					entry.request_id = std::to_string(idx);
 				}
@@ -1324,7 +1332,7 @@ std::vector<BatchResultEntry> GeminiGetInlineResults(ClientContext &context, con
 				// Try to get text from response
 				yyjson_val *text = yyjson_obj_get(response, "text");
 				if (text && yyjson_is_str(text)) {
-					entry.response = yyjson_get_str(text);
+					entry.response = SafeJsonStr(text);
 					entry.status = "ok";
 				} else {
 					// Try candidates structure: candidates[0].content.parts[0].text
@@ -1340,7 +1348,7 @@ std::vector<BatchResultEntry> GeminiGetInlineResults(ClientContext &context, con
 									if (part) {
 										yyjson_val *txt = yyjson_obj_get(part, "text");
 										if (txt && yyjson_is_str(txt)) {
-											entry.response = yyjson_get_str(txt);
+											entry.response = SafeJsonStr(txt);
 											entry.status = "ok";
 										}
 									}
@@ -1356,7 +1364,7 @@ std::vector<BatchResultEntry> GeminiGetInlineResults(ClientContext &context, con
 				entry.status = "error";
 				yyjson_val *msg = yyjson_obj_get(error, "message");
 				if (msg && yyjson_is_str(msg)) {
-					entry.error_message = yyjson_get_str(msg);
+					entry.error_message = SafeJsonStr(msg);
 				}
 			}
 
@@ -1390,7 +1398,7 @@ std::vector<BatchResultEntry> ParseGeminiBatchResults(const std::string &jsonl_c
 		// Get key (request_id)
 		yyjson_val *key = yyjson_obj_get(root, "key");
 		if (key && yyjson_is_str(key)) {
-			entry.request_id = yyjson_get_str(key);
+			entry.request_id = SafeJsonStr(key);
 		}
 
 		// Get response
@@ -1408,7 +1416,7 @@ std::vector<BatchResultEntry> ParseGeminiBatchResults(const std::string &jsonl_c
 							if (part) {
 								yyjson_val *text = yyjson_obj_get(part, "text");
 								if (text && yyjson_is_str(text)) {
-									entry.response = yyjson_get_str(text);
+									entry.response = SafeJsonStr(text);
 									entry.status = "ok";
 								}
 							}
@@ -1424,7 +1432,7 @@ std::vector<BatchResultEntry> ParseGeminiBatchResults(const std::string &jsonl_c
 			entry.status = "error";
 			yyjson_val *msg = yyjson_obj_get(error, "message");
 			if (msg && yyjson_is_str(msg)) {
-				entry.error_message = yyjson_get_str(msg);
+				entry.error_message = SafeJsonStr(msg);
 			}
 		}
 
