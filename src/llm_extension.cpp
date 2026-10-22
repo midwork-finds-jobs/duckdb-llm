@@ -16,18 +16,15 @@ void RegisterBatchFunctions(ExtensionLoader &loader);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	auto &db = loader.GetDatabaseInstance();
-	Connection conn(db);
-
-	// Install and load http_request from community - abort on failure
-	auto install_result = conn.Query("INSTALL http_request FROM community");
-	if (install_result->HasError()) {
-		throw IOException("LLM extension requires http_request extension. Failed to install: " +
-		                  install_result->GetError());
-	}
-
-	auto load_result = conn.Query("LOAD http_request");
-	if (load_result->HasError()) {
-		throw IOException("LLM extension requires http_request extension. Failed to load: " + load_result->GetError());
+	// http_request provides the HTTP client. Load it if available (statically linked or installed),
+	// otherwise try installing it from community. Failure is not fatal here: calls report a clear error.
+	if (!db.ExtensionIsLoaded("http_request")) {
+		Connection conn(db);
+		if (conn.Query("LOAD http_request")->HasError()) {
+			if (!conn.Query("INSTALL http_request FROM community")->HasError()) {
+				conn.Query("LOAD http_request");
+			}
+		}
 	}
 
 	// Register extension options (SET llm_xxx = ...)

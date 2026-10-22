@@ -7,6 +7,31 @@ namespace duckdb {
 
 using namespace duckdb_yyjson;
 
+// yyjson_get_str returns NULL for non-string values; never construct std::string from it directly
+static inline std::string SafeJsonStr(yyjson_val *val) {
+	const char *str = yyjson_get_str(val);
+	return str ? std::string(str) : std::string();
+}
+
+// Content value as string: strings as-is, other non-null values serialized as JSON
+static bool JsonContentToString(yyjson_val *val, std::string &out) {
+	if (!val || yyjson_is_null(val)) {
+		return false;
+	}
+	if (yyjson_is_str(val)) {
+		out = yyjson_get_str(val);
+		return true;
+	}
+	size_t len = 0;
+	char *json = yyjson_val_write(val, 0, &len);
+	if (!json) {
+		return false;
+	}
+	out = std::string(json, len);
+	free(json);
+	return true;
+}
+
 std::string EscapeJsonString(const std::string &str) {
 	std::string result;
 	result.reserve(str.size() + 16);
@@ -285,7 +310,7 @@ std::string ParseOpenAIResponse(const std::string &response_body, std::string &e
 	if (error) {
 		yyjson_val *msg = yyjson_obj_get(error, "message");
 		if (msg) {
-			error_out = yyjson_get_str(msg);
+			error_out = SafeJsonStr(msg);
 		} else {
 			error_out = "Unknown API error";
 		}
@@ -322,7 +347,12 @@ std::string ParseOpenAIResponse(const std::string &response_body, std::string &e
 		return "";
 	}
 
-	std::string result = yyjson_get_str(content);
+	std::string result;
+	if (!JsonContentToString(content, result)) {
+		error_out = "Invalid 'content' value in response";
+		yyjson_doc_free(doc);
+		return "";
+	}
 	yyjson_doc_free(doc);
 	return StripMarkdownCodeBlock(result);
 }
@@ -341,7 +371,7 @@ std::string ParseGeminiResponse(const std::string &response_body, std::string &e
 	if (error) {
 		yyjson_val *msg = yyjson_obj_get(error, "message");
 		if (msg) {
-			error_out = yyjson_get_str(msg);
+			error_out = SafeJsonStr(msg);
 		} else {
 			error_out = "Unknown API error";
 		}
@@ -392,7 +422,12 @@ std::string ParseGeminiResponse(const std::string &response_body, std::string &e
 		return "";
 	}
 
-	std::string result = yyjson_get_str(text);
+	std::string result;
+	if (!JsonContentToString(text, result)) {
+		error_out = "Invalid 'text' value in response";
+		yyjson_doc_free(doc);
+		return "";
+	}
 	yyjson_doc_free(doc);
 	return StripMarkdownCodeBlock(result);
 }
@@ -415,7 +450,7 @@ std::string ParseCloudflareResponse(const std::string &response_body, std::strin
 			if (first_error) {
 				yyjson_val *msg = yyjson_obj_get(first_error, "message");
 				if (msg) {
-					error_out = yyjson_get_str(msg);
+					error_out = SafeJsonStr(msg);
 					yyjson_doc_free(doc);
 					return "";
 				}
@@ -441,7 +476,12 @@ std::string ParseCloudflareResponse(const std::string &response_body, std::strin
 		return "";
 	}
 
-	std::string result_str = yyjson_get_str(response);
+	std::string result_str;
+	if (!JsonContentToString(response, result_str)) {
+		error_out = "Invalid 'response' value in result";
+		yyjson_doc_free(doc);
+		return "";
+	}
 	yyjson_doc_free(doc);
 	return StripMarkdownCodeBlock(result_str);
 }
